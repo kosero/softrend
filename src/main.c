@@ -6,6 +6,16 @@
 #define WIDTH 800
 #define HEIGHT 600
 
+typedef struct Vec2 {
+  float x, y;
+} Vec2;
+
+#define min(a, b) ((a) < (b) ? (a) : (b))
+#define min3(a, b, c) min(min(a, b), c)
+
+#define max(a, b) ((a) > (b) ? (a) : (b))
+#define max3(a, b, c) max(max(a, b), c)
+
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 static uint32_t framebuffer[WIDTH * HEIGHT];
 
@@ -36,9 +46,9 @@ static void sdl_clean_up(SDL_Renderer *r, SDL_Window *w) {
   SDL_Quit();
 }
 
-static void draw_pixel(int x, int y, uint32_t color) {
-  if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT) {
-    framebuffer[(y * WIDTH) + x] = color;
+static void draw_pixel(Vec2 point, uint32_t color) {
+  if (point.x >= 0 && point.x < WIDTH && point.y >= 0 && point.y < HEIGHT) {
+    framebuffer[(int)((point.y * WIDTH) + point.x)] = color;
   }
 }
 
@@ -48,28 +58,62 @@ static void framebuffer_clear(uint32_t color) {
   }
 }
 
-static void draw_line(int x0, int y0, int x1, int y1, uint32_t color) {
-  int dx = abs(x1 - x0);
-  int dy = abs(y1 - y0);
-  int sx = (x0 < x1) ? 1 : -1;
-  int sy = (y0 < y1) ? 1 : -1;
+static void draw_line(Vec2 p0, Vec2 p1, uint32_t color) {
+  int dx = abs((int)(p1.x - p0.x));
+  int dy = abs((int)(p1.y - p0.y));
+  int sx = (p0.x < p1.x) ? 1 : -1;
+  int sy = (p0.y < p1.y) ? 1 : -1;
   int err = dx - dy;
 
   while (true) {
-    draw_pixel(x0, y0, color);
+    draw_pixel(p0, color);
 
-    if (x0 == x1 && y0 == y1) {
+    if (p0.x == p1.x && p0.y == p1.y) {
       break;
     }
 
     int e2 = 2 * err;
     if (e2 > -dy) {
       err -= dy;
-      x0 += sx;
+      p0.x += (float)sx;
     }
     if (e2 < dx) {
       err += dx;
-      y0 += sy;
+      p0.y += (float)sy;
+    }
+  }
+}
+
+static inline void process_triangle_pixel(Vec2 p0, Vec2 p1, Vec2 p2, int x,
+                                          int y, float det, uint32_t color) {
+  if (det == 0.0f) {
+    return;
+  }
+
+  float u = (((p1.y - p2.y) * ((float)x - p2.x)) +
+             ((p2.x - p1.x) * ((float)y - p2.y))) /
+            det;
+  float v = (((p2.y - p0.y) * ((float)x - p2.x)) +
+             ((p0.x - p2.x) * ((float)y - p2.y))) /
+            det;
+  float w = 1.0f - u - v;
+
+  if (u >= 0.0f && v >= 0.0f && w >= 0.0f) {
+    draw_pixel((Vec2){(float)x, (float)y}, color);
+  }
+}
+
+static void draw_triangle(Vec2 p0, Vec2 p1, Vec2 p2, uint32_t color) {
+  int min_x = min3((int)p0.x, (int)p1.x, (int)p2.x);
+  int max_x = max3((int)p0.x, (int)p1.x, (int)p2.x);
+  int min_y = min3((int)p0.y, (int)p1.y, (int)p2.y);
+  int max_y = max3((int)p0.y, (int)p1.y, (int)p2.y);
+
+  float det = ((p1.y - p2.y) * (p0.x - p2.x)) + ((p2.x - p1.x) * (p0.y - p2.y));
+
+  for (int y = min_y; y <= max_y; y++) {
+    for (int x = min_x; x <= max_x; x++) {
+      process_triangle_pixel(p0, p1, p2, x, y, det, color);
     }
   }
 }
@@ -99,6 +143,10 @@ int main(void) {
   uint32_t col_green = SDL_MapRGBA(fmt_details, NULL, 0, 255, 0, 255);
   uint32_t col_blue = SDL_MapRGBA(fmt_details, NULL, 0, 0, 255, 255);
 
+  Vec2 v0 = (Vec2){400, 100};
+  Vec2 v1 = (Vec2){200, 500};
+  Vec2 v2 = (Vec2){600, 500};
+
   bool running = true;
   SDL_Event event;
 
@@ -111,9 +159,7 @@ int main(void) {
 
     framebuffer_clear(0x000000FF);
 
-    draw_line(400, 100, 200, 500, col_red);
-    draw_line(200, 500, 600, 500, col_green);
-    draw_line(600, 500, 400, 100, col_blue);
+    draw_triangle(v0, v1, v2, col_red);
 
     SDL_UpdateTexture(texture, NULL, framebuffer,
                       WIDTH * (int)sizeof(uint32_t));
