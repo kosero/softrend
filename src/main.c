@@ -1,14 +1,20 @@
 #include <SDL3/SDL.h>
+#include <stdbool.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <unistd.h>
 
-#define WIDTH 800
-#define HEIGHT 600
+enum {
+  WIDTH = 800,
+  HEIGHT = 600,
+};
 
 typedef struct Vec2 {
   float x, y;
 } Vec2;
+
+typedef struct Color {
+  float r, g, b, a;
+} Color;
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
 #define min3(a, b, c) min(min(a, b), c)
@@ -18,6 +24,8 @@ typedef struct Vec2 {
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 static uint32_t framebuffer[WIDTH * HEIGHT];
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+static uint32_t framebuffer_depth[WIDTH * HEIGHT];
 
 typedef struct SDL_Context {
   SDL_Renderer *r;
@@ -46,46 +54,42 @@ static void sdl_clean_up(SDL_Renderer *r, SDL_Window *w) {
   SDL_Quit();
 }
 
-static void draw_pixel(Vec2 point, uint32_t color) {
+static inline uint32_t color_to_uint32(Color color) {
+  uint8_t r = (uint8_t)(min(max(color.r, 0.0f), 1.0f) * 255.0f);
+  uint8_t g = (uint8_t)(min(max(color.g, 0.0f), 1.0f) * 255.0f);
+  uint8_t b = (uint8_t)(min(max(color.b, 0.0f), 1.0f) * 255.0f);
+  uint8_t a = (uint8_t)(min(max(color.a, 0.0f), 1.0f) * 255.0f);
+
+  return ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) |
+         (uint32_t)r;
+}
+
+static void draw_pixel(Vec2 point, Color color) {
   if (point.x >= 0 && point.x < WIDTH && point.y >= 0 && point.y < HEIGHT) {
-    framebuffer[(int)((point.y * WIDTH) + point.x)] = color;
+    framebuffer[(int)((point.y * WIDTH) + point.x)] = color_to_uint32(color);
   }
 }
 
-static void framebuffer_clear(uint32_t color) {
+static void framebuffer_clear(Color color) {
+  uint32_t pixel = color_to_uint32(color);
   for (int i = 0; i < WIDTH * HEIGHT; i++) {
-    framebuffer[i] = color;
+    framebuffer[i] = pixel;
   }
 }
 
-static void draw_line(Vec2 p0, Vec2 p1, uint32_t color) {
-  int dx = abs((int)(p1.x - p0.x));
-  int dy = abs((int)(p1.y - p0.y));
-  int sx = (p0.x < p1.x) ? 1 : -1;
-  int sy = (p0.y < p1.y) ? 1 : -1;
-  int err = dx - dy;
-
-  while (true) {
-    draw_pixel(p0, color);
-
-    if (p0.x == p1.x && p0.y == p1.y) {
-      break;
-    }
-
-    int e2 = 2 * err;
-    if (e2 > -dy) {
-      err -= dy;
-      p0.x += (float)sx;
-    }
-    if (e2 < dx) {
-      err += dx;
-      p0.y += (float)sy;
-    }
-  }
+static inline Color color_lerp(Color c0, Color c1, Color c2, float u, float v,
+                               float w) {
+  return (Color){
+      .r = (c0.r * w) + (c1.r * u) + (c2.r * v),
+      .g = (c0.g * w) + (c1.g * u) + (c2.g * v),
+      .b = (c0.b * w) + (c1.b * u) + (c2.b * v),
+      .a = (c0.a * w) + (c1.a * u) + (c2.a * v),
+  };
 }
 
-static inline void process_triangle_pixel(Vec2 p0, Vec2 p1, Vec2 p2, int x,
-                                          int y, float det, uint32_t color) {
+static inline void process_triangle_pixel(Vec2 p0, Vec2 p1, Vec2 p2, Color c0,
+                                          Color c1, Color c2, int x, int y,
+                                          float det) {
   if (det == 0.0f) {
     return;
   }
@@ -99,11 +103,13 @@ static inline void process_triangle_pixel(Vec2 p0, Vec2 p1, Vec2 p2, int x,
   float w = 1.0f - u - v;
 
   if (u >= 0.0f && v >= 0.0f && w >= 0.0f) {
-    draw_pixel((Vec2){(float)x, (float)y}, color);
+    Color pixel_color = color_lerp(c0, c1, c2, u, v, w);
+    draw_pixel((Vec2){(float)x, (float)y}, pixel_color);
   }
 }
 
-static void draw_triangle(Vec2 p0, Vec2 p1, Vec2 p2, uint32_t color) {
+static void draw_triangle_interpolated(Vec2 p0, Vec2 p1, Vec2 p2, Color c0,
+                                       Color c1, Color c2) {
   int min_x = min3((int)p0.x, (int)p1.x, (int)p2.x);
   int max_x = max3((int)p0.x, (int)p1.x, (int)p2.x);
   int min_y = min3((int)p0.y, (int)p1.y, (int)p2.y);
@@ -113,7 +119,7 @@ static void draw_triangle(Vec2 p0, Vec2 p1, Vec2 p2, uint32_t color) {
 
   for (int y = min_y; y <= max_y; y++) {
     for (int x = min_x; x <= max_x; x++) {
-      process_triangle_pixel(p0, p1, p2, x, y, det, color);
+      process_triangle_pixel(p0, p1, p2, c0, c1, c2, x, y, det);
     }
   }
 }
@@ -135,13 +141,11 @@ int main(void) {
     return 1;
   }
 
-  const SDL_PixelFormatDetails *fmt_details =
-      SDL_GetPixelFormatDetails(SDL_PIXELFORMAT_RGBA32);
+  Color col_bg = {0.0f, 0.0f, 0.0f, 1.0f};
 
-  uint32_t col_bg = SDL_MapRGBA(fmt_details, NULL, 0, 0, 0, 255);
-  uint32_t col_red = SDL_MapRGBA(fmt_details, NULL, 255, 0, 0, 255);
-  uint32_t col_green = SDL_MapRGBA(fmt_details, NULL, 0, 255, 0, 255);
-  uint32_t col_blue = SDL_MapRGBA(fmt_details, NULL, 0, 0, 255, 255);
+  Color col_red = {1.0f, 0.0f, 0.0f, 1.0f};
+  Color col_green = {0.0f, 1.0f, 0.0f, 1.0f};
+  Color col_blue = {0.0f, 0.0f, 1.0f, 1.0f};
 
   Vec2 v0 = (Vec2){400, 100};
   Vec2 v1 = (Vec2){200, 500};
@@ -157,9 +161,9 @@ int main(void) {
       }
     }
 
-    framebuffer_clear(0x000000FF);
+    framebuffer_clear(col_bg);
 
-    draw_triangle(v0, v1, v2, col_red);
+    draw_triangle_interpolated(v0, v1, v2, col_red, col_green, col_blue);
 
     SDL_UpdateTexture(texture, NULL, framebuffer,
                       WIDTH * (int)sizeof(uint32_t));
