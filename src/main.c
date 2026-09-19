@@ -1,4 +1,5 @@
 #include <SDL3/SDL.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <unistd.h>
@@ -11,6 +12,10 @@ enum {
 typedef struct Vec2 {
   float x, y;
 } Vec2;
+
+typedef struct Vec3 {
+  float x, y, z;
+} Vec3;
 
 typedef struct Color {
   float r, g, b, a;
@@ -25,7 +30,7 @@ typedef struct Color {
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 static uint32_t framebuffer[WIDTH * HEIGHT];
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-static uint32_t framebuffer_depth[WIDTH * HEIGHT];
+static float depthbuffer[WIDTH * HEIGHT];
 
 typedef struct SDL_Context {
   SDL_Renderer *r;
@@ -65,8 +70,10 @@ static inline uint32_t color_to_uint32(Color color) {
 }
 
 static void draw_pixel(Vec2 point, Color color) {
-  if (point.x >= 0 && point.x < WIDTH && point.y >= 0 && point.y < HEIGHT) {
-    framebuffer[(int)((point.y * WIDTH) + point.x)] = color_to_uint32(color);
+  if (point.x >= 0 && point.x < (float)WIDTH && point.y >= 0 &&
+      point.y < (float)HEIGHT) {
+    framebuffer[(int)((point.y * (float)WIDTH) + point.x)] =
+        color_to_uint32(color);
   }
 }
 
@@ -74,6 +81,12 @@ static void framebuffer_clear(Color color) {
   uint32_t pixel = color_to_uint32(color);
   for (int i = 0; i < WIDTH * HEIGHT; i++) {
     framebuffer[i] = pixel;
+  }
+}
+
+static void depthbuffer_clear(void) {
+  for (int i = 0; i < WIDTH * HEIGHT; i++) {
+    depthbuffer[i] = INFINITY;
   }
 }
 
@@ -87,7 +100,7 @@ static inline Color color_lerp(Color c0, Color c1, Color c2, float u, float v,
   };
 }
 
-static inline void process_triangle_pixel(Vec2 p0, Vec2 p1, Vec2 p2, Color c0,
+static inline void process_triangle_pixel(Vec3 p0, Vec3 p1, Vec3 p2, Color c0,
                                           Color c1, Color c2, int x, int y,
                                           float det) {
   if (det == 0.0f) {
@@ -103,12 +116,17 @@ static inline void process_triangle_pixel(Vec2 p0, Vec2 p1, Vec2 p2, Color c0,
   float w = 1.0f - u - v;
 
   if (u >= 0.0f && v >= 0.0f && w >= 0.0f) {
-    Color pixel_color = color_lerp(c0, c1, c2, u, v, w);
-    draw_pixel((Vec2){(float)x, (float)y}, pixel_color);
+    float depth_z = (w * p0.z) + (u * p1.z) + (v * p2.z);
+    int i = (y * WIDTH) + x;
+    if (depthbuffer[i] >= depth_z) {
+      depthbuffer[i] = depth_z;
+      Color pixel_color = color_lerp(c0, c1, c2, u, v, w);
+      draw_pixel((Vec2){(float)x, (float)y}, pixel_color);
+    }
   }
 }
 
-static void draw_triangle_interpolated(Vec2 p0, Vec2 p1, Vec2 p2, Color c0,
+static void draw_triangle_interpolated(Vec3 p0, Vec3 p1, Vec3 p2, Color c0,
                                        Color c1, Color c2) {
   int min_x = min3((int)p0.x, (int)p1.x, (int)p2.x);
   int max_x = max3((int)p0.x, (int)p1.x, (int)p2.x);
@@ -147,9 +165,13 @@ int main(void) {
   Color col_green = {0.0f, 1.0f, 0.0f, 1.0f};
   Color col_blue = {0.0f, 0.0f, 1.0f, 1.0f};
 
-  Vec2 v0 = (Vec2){400, 100};
-  Vec2 v1 = (Vec2){200, 500};
-  Vec2 v2 = (Vec2){600, 500};
+  Vec3 v0 = (Vec3){400, 100, 0};
+  Vec3 v1 = (Vec3){200, 500, 0};
+  Vec3 v2 = (Vec3){600, 500, 0};
+
+  Vec3 v3 = (Vec3){400, 200, -1};
+  Vec3 v4 = (Vec3){200, 600, -1};
+  Vec3 v5 = (Vec3){600, 600, -1};
 
   bool running = true;
   SDL_Event event;
@@ -162,8 +184,11 @@ int main(void) {
     }
 
     framebuffer_clear(col_bg);
+    depthbuffer_clear();
 
     draw_triangle_interpolated(v0, v1, v2, col_red, col_green, col_blue);
+
+    draw_triangle_interpolated(v3, v4, v5, col_red, col_green, col_blue);
 
     SDL_UpdateTexture(texture, NULL, framebuffer,
                       WIDTH * (int)sizeof(uint32_t));
